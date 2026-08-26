@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f6f4ee" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="每日成长" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png" />
+    <link rel="icon" href="./icons/app-icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>每日成长</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <p class="eyebrow">DAILY GROWTH</p>
+        <h1>每日成长</h1>
+        <p id="today-label" class="today-label"></p>
+      </header>
+
+      <section id="today-view" class="view" aria-labelledby="today-heading">
+        <div class="summary-card">
+          <div>
+            <p class="muted">当前连续打卡</p>
+            <strong><span id="streak-count">0</span><small> 天</small></strong>
+          </div>
+          <p id="completion-copy" class="completion-copy">今天还未开始</p>
+        </div>
+
+        <h2 id="today-heading">今天想做什么？</h2>
+        <div id="project-list" class="project-list"></div>
+      </section>
+
+      <section id="checkin-view" class="view" hidden aria-labelledby="checkin-heading">
+        <button id="back-home" class="back-button" type="button">‹ 返回首页</button>
+        <article class="practice-card checkin-card">
+          <div class="practice-heading">
+            <div id="checkin-mark" class="project-mark"></div>
+            <div><h2 id="checkin-heading"></h2><p id="checkin-status" class="status"></p></div>
+          </div>
+          <label id="title-field" class="field" hidden>打卡标题
+            <input id="checkin-title" maxlength="60" type="text" placeholder="例如：练书法" />
+          </label>
+          <label class="field">打卡内容
+            <input id="checkin-content" maxlength="100" type="text" placeholder="今天做了什么？" />
+          </label>
+          <label class="field">学习 / 练习时间（分钟）
+            <input id="checkin-minutes" inputmode="numeric" min="0" step="1" type="number" placeholder="例如 30" />
+          </label>
+          <label class="field">备注
+            <textarea id="checkin-notes" maxlength="300" rows="3" placeholder="感受、发现或明天的计划"></textarea>
+          </label>
+          <label class="media-picker">上传图片
+            <input id="media-input" type="file" accept="image/*" multiple />
+            <span>从相册选择（最多 5 张；单张不超过 10MB）</span>
+          </label>
+          <div id="media-preview" class="media-preview" aria-live="polite"></div>
+          <button id="save-checkin" class="save-button" type="button">保存记录</button>
+        </article>
+      </section>
+
+      <section id="history-view" class="view" hidden aria-labelledby="history-heading">
+        <h2 id="history-heading">历史记录</h2>
+        <div class="history-toolbar">
+          <button id="open-filter" class="filter-button" type="button">
+            <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 5h14M6 10h8M8.5 15h3" /></svg>
+            <span>筛选</span>
+          </button>
+          <div id="filter-status" class="filter-status" hidden>
+            <span id="filter-summary"></span>
+            <button id="quick-clear-filter" type="button" aria-label="清除筛选">×</button>
+          </div>
+        </div>
+        <div id="month-jump" class="month-jump" hidden aria-label="月份快速跳转"></div>
+        <div id="history-list" class="history-list"></div>
+      </section>
+
+      <section id="history-day-view" class="view" hidden aria-labelledby="history-day-heading">
+        <button id="back-history" class="back-button" type="button">‹ 返回历史记录</button>
+        <h2 id="history-day-heading"></h2>
+        <div id="history-detail" class="history-detail"></div>
+      </section>
+
+      <section id="stats-view" class="view" hidden aria-labelledby="stats-heading">
+        <h2 id="stats-heading">简单统计</h2>
+        <p class="muted">已保存的所有练习记录</p>
+        <div id="stats-list" class="stats-list"></div>
+      </section>
+    </main>
+
+    <nav class="tabbar" aria-label="主导航">
+      <button class="tab is-active" data-view="today-view" type="button">今天</button>
+      <button class="tab" data-view="history-view" type="button">历史</button>
+      <button class="tab" data-view="stats-view" type="button">统计</button>
+    </nav>
+
+    <div id="success-modal" class="modal" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="success-title">
+        <button class="modal-close" type="button" aria-label="关闭">×</button>
+        <div class="success-check" aria-hidden="true">✓</div>
+        <h2 id="success-title"></h2>
+      </div>
+    </div>
+    <div id="media-viewer" class="media-viewer" hidden>
+      <button class="viewer-close" type="button" aria-label="关闭大图">×</button>
+      <img alt="打卡图片大图" />
+    </div>
+    <div id="filter-sheet" class="filter-sheet" hidden>
+      <section class="filter-sheet-card" role="dialog" aria-modal="true" aria-labelledby="filter-sheet-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <header class="sheet-header">
+          <h2 id="filter-sheet-title">筛选记录</h2>
+          <button id="close-filter" class="sheet-close" type="button" aria-label="关闭筛选">×</button>
+        </header>
+        <p class="muted">选择筛选方式</p>
+        <div class="filter-modes" role="group" aria-label="筛选方式">
+          <button data-filter-mode="year" type="button">按年份</button>
+          <button data-filter-mode="month" type="button">按月份</button>
+          <button data-filter-mode="date" type="button">按日期</button>
+          <button data-filter-mode="range" type="button">按时间段</button>
+        </div>
+        <div class="filter-fields">
+          <label id="filter-year-field" class="field">年份
+            <select id="filter-year"><option value="">选择年份</option></select>
+          </label>
+          <label id="filter-month-field" class="field">月份
+            <select id="filter-month">
+              <option value="">选择月份</option>
+              <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
+              <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
+              <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
+              <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
+            </select>
+          </label>
+          <label id="filter-date-field" class="field">指定日期
+            <input id="filter-date" type="date" />
+          </label>
+          <label id="filter-start-field" class="field">开始日期
+            <input id="filter-start" type="date" />
+          </label>
+          <label id="filter-end-field" class="field">结束日期
+            <input id="filter-end" type="date" />
+          </label>
+        </div>
+        <div class="sheet-actions">
+          <button id="apply-filter" class="filter-button" type="button">查询</button>
+          <button id="clear-filter" class="text-button" type="button">清除筛选</button>
+        </div>
+      </section>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
