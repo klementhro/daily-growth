@@ -88,7 +88,11 @@ export async function getRecordById(id) {
 }
 
 export async function uploadImage(path, blob) {
-  return throwResult(await bucket().upload(path, blob, { contentType: blob.type || "image/jpeg", upsert: true }));
+  try {
+    return throwResult(await bucket().upload(path, blob, { contentType: blob.type || "image/jpeg", upsert: true }));
+  } catch (error) {
+    throw new Error(`CloudBase Storage 上传失败：${messageOf(error)}`);
+  }
 }
 
 export async function downloadImage(path) {

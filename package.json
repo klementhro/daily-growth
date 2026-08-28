@@ -1,0 +1,14 @@
+{
+  "name": "daily-growth",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/cloudbase-entry.js --bundle --minify --format=iife --platform=browser --target=es2020 --outfile=vendor/cloudbase.bundle.js && node scripts/check-cloudbase-bundle.cjs",
+    "check": "node --check app.js && node --check sync.js && node --check cloudbase.js && node --check sw.js"
+  },
+  "dependencies": {
+    "@cloudbase/js-sdk": "3.8.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
