@@ -1,4 +1,4 @@
-const CACHE = "daily-growth-v12";
+const CACHE = "daily-growth-v13";
 const APP_SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./cloudbase-config.js", "./cloudbase.js", "./sync.js", "./vendor/cloudbase.bundle.js", "./manifest.webmanifest", "./icons/app-icon.svg", "./icons/apple-touch-icon.png", "./icons/icon-512.png"];
 const SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.registration.scope).href));
 

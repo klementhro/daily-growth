@@ -68,10 +68,47 @@ function database() {
   return db;
 }
 
-function bucket() {
-  const { app: currentApp } = initialiseCloudbase();
+async function getAccessToken() {
+  const { auth: currentAuth } = initialiseCloudbase();
+  const result = await currentAuth.getSession();
+  if (result?.error) throw new Error(messageOf(result.error, "无法取得 CloudBase 登录状态。"));
+  const session = result?.data?.session;
+  if (!session?.access_token) throw new Error("登录已失效，请重新登录。");
+  return session.access_token;
+}
+
+function encodeObjectPath(path) {
+  const parts = String(path || "").split("/");
+  if (!parts.length || parts.some((part) => !part)) throw new Error("CloudBase Storage 对象路径无效。");
+  return parts.map(encodeURIComponent).join("/");
+}
+
+function storageObjectUrl(path) {
   if (!config.storageBucket) throw new Error("请在 cloudbase-config.js 配置 storageBucket。");
-  return currentApp.storage.from(config.storageBucket);
+  return `https://${config.envId}.api.tcloudbasegateway.com/v1/storages/object/${encodeURIComponent(config.storageBucket)}/${encodeObjectPath(path)}`;
+}
+
+async function storageRequest(operation, path, options = {}, ignoreNotFound = false) {
+  const token = await getAccessToken();
+  let response;
+  try {
+    response = await fetch(storageObjectUrl(path), {
+      ...options,
+      headers: { Authorization: `Bearer ${token}`, ...(options.headers || {}) }
+    });
+  } catch (error) {
+    const message = `CloudBase Storage ${operation}失败 (网络错误): ${messageOf(error)}`;
+    console.error(message);
+    throw new Error(message);
+  }
+  if (ignoreNotFound && response.status === 404) return response;
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    const message = `CloudBase Storage ${operation}失败 (${response.status}): ${body || response.statusText}`;
+    console.error(message);
+    throw new Error(message);
+  }
+  return response;
 }
 
 export async function upsertRecord(row) {
@@ -88,18 +125,24 @@ export async function getRecordById(id) {
 }
 
 export async function uploadImage(path, blob) {
-  try {
-    return throwResult(await bucket().upload(path, blob, { contentType: blob.type || "image/jpeg", upsert: true }));
-  } catch (error) {
-    throw new Error(`CloudBase Storage 上传失败：${messageOf(error)}`);
-  }
+  const response = await storageRequest("上传", path, {
+    method: "POST",
+    headers: {
+      "Content-Type": blob.type || "application/octet-stream",
+      "x-upsert": "true"
+    },
+    body: blob
+  });
+  const text = await response.text();
+  if (!text) return { path };
+  try { return JSON.parse(text); } catch { return { path }; }
 }
 
 export async function downloadImage(path) {
-  return throwResult(await bucket().download(path));
+  return (await storageRequest("下载", path, { method: "GET" })).blob();
 }
 
 export async function removeImages(paths) {
   if (!paths.length) return;
-  return throwResult(await bucket().remove(paths));
+  for (const path of new Set(paths)) await storageRequest("删除", path, { method: "DELETE" }, true);
 }
