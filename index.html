@@ -15,9 +15,32 @@
     <title>每日成长</title>
   </head>
   <body>
+    <section id="auth-gate" class="auth-gate" aria-labelledby="auth-heading">
+      <article class="auth-card">
+        <p class="eyebrow">DAILY GROWTH</p>
+        <h1 id="auth-heading">每日成长</h1>
+        <p id="auth-copy" class="muted">登录后安全同步你的成长记录。</p>
+        <label id="auth-email-field" class="field">邮箱
+          <input id="auth-email" autocomplete="email" inputmode="email" type="email" placeholder="name@example.com" />
+        </label>
+        <label id="auth-password-field" class="field">密码
+          <input id="auth-password" autocomplete="current-password" minlength="8" type="password" placeholder="至少 8 位，包含字母和数字" />
+        </label>
+        <label id="auth-otp-field" class="field" hidden>邮箱验证码
+          <input id="auth-otp" autocomplete="one-time-code" inputmode="numeric" type="text" placeholder="请输入邮箱收到的验证码" />
+        </label>
+        <button id="auth-submit" class="save-button" type="button">登录</button>
+        <button id="auth-switch" class="text-button auth-switch" type="button">注册新账号</button>
+        <p id="auth-message" class="auth-message" role="status"></p>
+      </article>
+    </section>
+
     <main class="app-shell">
       <header class="app-header">
-        <p class="eyebrow">DAILY GROWTH</p>
+        <div class="header-tools">
+          <p class="eyebrow">DAILY GROWTH</p>
+          <button id="sync-status" class="sync-status" type="button" hidden>已同步</button>
+        </div>
         <h1>每日成长</h1>
         <p id="today-label" class="today-label"></p>
       </header>
@@ -55,7 +78,7 @@
             <textarea id="checkin-notes" maxlength="300" rows="3" placeholder="感受、发现或明天的计划"></textarea>
           </label>
           <label class="media-picker">上传图片
-            <input id="media-input" type="file" accept="image/*" multiple />
+            <input id="media-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,image/gif" multiple />
             <span>从相册选择（最多 5 张；单张不超过 10MB）</span>
           </label>
           <div id="media-preview" class="media-preview" aria-live="polite"></div>
@@ -96,6 +119,7 @@
       <button class="tab is-active" data-view="today-view" type="button">今天</button>
       <button class="tab" data-view="history-view" type="button">历史</button>
       <button class="tab" data-view="stats-view" type="button">统计</button>
+      <button id="account-button" class="tab" type="button" aria-label="账号与设置">账号</button>
     </nav>
 
     <div id="success-modal" class="modal" hidden>
@@ -153,6 +177,22 @@
       </section>
     </div>
 
-    <script src="./app.js"></script>
+    <div id="account-sheet" class="filter-sheet" hidden>
+      <section class="filter-sheet-card account-sheet-card" role="dialog" aria-modal="true" aria-labelledby="account-sheet-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <header class="sheet-header">
+          <h2 id="account-sheet-title">账号与同步</h2>
+          <button id="close-account" class="sheet-close" type="button" aria-label="关闭账号设置">×</button>
+        </header>
+        <p class="muted">当前账号</p>
+        <p id="account-email" class="account-email"></p>
+        <button id="account-sync" class="filter-button" type="button">立即同步</button>
+        <button id="logout" class="text-button logout-button" type="button">退出登录</button>
+      </section>
+    </div>
+
+    <script src="./cloudbase-config.js"></script>
+	    <script src="./vendor/cloudbase.bundle.js"></script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>

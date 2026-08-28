@@ -1,0 +1,14 @@
+/*
+ * 这是可公开提交到 GitHub Pages 的浏览器配置。
+ * Publishable Key 只能用于客户端请求，仍会受 SQL / Storage RLS 限制。
+ * 绝不能在此文件填写 SecretId、SecretKey、数据库密码、service_role key 或任何私钥。
+ */
+window.DAILY_GROWTH_CLOUDBASE_CONFIG = {
+  // 在 CloudBase「环境管理」中复制实际“环境 ID”（环境名称 mydate1 未必等于环境 ID）。
+  envId: "mydate1-d2gehzt83de54a44c",
+  region: "ap-shanghai",
+  // 在「API Key 配置」创建的 Publishable Key；可公开，不能为空。
+  publishableKey: "eyJhbGciOiJSUzI1NiIsImtpZCI6IjEzMGRkMGM2LTMxM2QtNDM0NC04ZWU2LWU4MTRjYzA4MGIxMyJ9.eyJpc3MiOiJodHRwczovL215ZGF0ZTEtZDJnZWh6dDgzZGU1NGE0NGMuYXAtc2hhbmdoYWkudGNiLWFwaS50ZW5jZW50Y2xvdWRhcGkuY29tIiwic3ViIjoiYW5vbiIsImF1ZCI6Im15ZGF0ZTEtZDJnZWh6dDgzZGU1NGE0NGMiLCJleHAiOjQwOTE1ODExMTYsImlhdCI6MTc4Nzg5NzkxNiwibm9uY2UiOiJ3YVlGd3lUNVNZLVI1cW9IS3ZBMl9nIiwiYXRfaGFzaCI6IndhWUZ3eVQ1U1ktUjVxb0hLdkEyX2ciLCJuYW1lIjoiQW5vbnltb3VzIiwic2NvcGUiOiJhbm9ueW1vdXMiLCJwcm9qZWN0X2lkIjoibXlkYXRlMS1kMmdlaHp0ODNkZTU0YTQ0YyIsIm1ldGEiOnsicGxhdGZvcm0iOiJQdWJsaXNoYWJsZUtleSJ9LCJyb2xlIjoiYW5vbiIsImlzX2Fub255bW91cyI6dHJ1ZSwiYXBwX21ldGFkYXRhIjp7InByb3ZpZGVyIjoiYW5vbnltb3VzIiwicHJvdmlkZXJzIjpbImFub255bW91cyJdfSwidXNlcl9tZXRhZGF0YSI6eyJuYW1lIjoiQW5vbnltb3VzIn0sInVzZXJfdHlwZSI6IiIsImNsaWVudF90eXBlIjoiY2xpZW50X3VzZXIiLCJpc19zeXN0ZW1fYWRtaW4iOmZhbHNlfQ.tJl_KUzk_jlhipaKZHAQVha1wpG7DrXLeWSpBeTstcoTOF_x4p369W3_aGqh-PnRwpWgiVJpO3_9m4z-Ef-Tlq8pT6ugSytFDUCsu4O8Dx5XWswGA5Zrq-Hx9xKrkTwWCnPrNlutoHpTLY_lWF9pC4-Y8QI33cYAd_zb1-nDqNrTr9RriilHT8zTg2StbCyXsWMRz5PIjElzltgmiwkfQ3r5vifa8EaCgBhMtpz5z0hzG0-TzU79PMIHYJYQzZey8JQ_FSnYAtKtzMGV-mR8LYiPihY70RJw_UUctpc4lw5F555Y6qKNvplMyVwabKWHdegl4fkhnD-ZB1fYX0NVNw",
+  // PG 云存储的私有 Bucket ID；对象实际路径为 daily-growth/<UID>/<UUID>.<ext>。
+  storageBucket: "daily-growth"
+};

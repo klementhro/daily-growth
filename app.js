@@ -1,636 +1,83 @@
-const PROJECTS = [
-  { id: "english", name: "学个英语", color: "var(--english-color)" },
-  { id: "lacquer", name: "做个大漆", color: "var(--lacquer-color)" },
-  { id: "dance", name: "杂七杂八", color: "var(--misc-color)" }
-];
-const LEGACY_STORAGE_KEY = "daily-growth:v1";
-const DB_NAME = "daily-growth";
-const DB_VERSION = 1;
-const STATE_STORE = "state";
-const MEDIA_STORE = "media";
-const MAX_FILES = 5;
-const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
-const MAX_RECORD_MEDIA_SIZE = 50 * 1024 * 1024;
-const $ = (selector) => document.querySelector(selector);
-let data = {};
-let database;
-let fallbackToLocalStorage = false;
-let activeProject;
-let activeAttachments = [];
-let viewerUrl;
-let selectedHistoryDate;
-let historyFilter = { applied: false, year: "", month: "", date: "", start: "", end: "" };
-let filterMode = "year";
+import { cloudbaseConfigurationMessage, downloadImage, getCurrentUser, initialiseCloudbase, isCloudbaseConfigured, signInWithEmail, signOut, signUpWithEmail, verifySignUpOtp } from "./cloudbase.js";
+import { createSyncService, normaliseAccountRecords } from "./sync.js";
 
-const localDate = (date = new Date()) => {
-  const offset = date.getTimezoneOffset() * 60000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
-};
-const displayDate = (key) => new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" }).format(new Date(`${key}T12:00:00`));
-const displayMonth = (key) => new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long" }).format(new Date(`${key}-01T12:00:00`));
-const readLegacyData = () => { try { return JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY)) || {}; } catch { return {}; } };
-
-function projectRecords(day, projectId) {
-  const value = day?.[projectId];
-  return Array.isArray(value) ? value : value ? [value] : [];
-}
-
-function isDone(record) {
-  return Boolean(record && (Number(record.minutes) > 0 || record.title || record.content || record.notes || record.media?.length));
-}
-
-function dayHasRecords(day) {
-  return PROJECTS.some((project) => projectRecords(day, project.id).some(isDone));
-}
-
-function doneCount(day) {
-  return PROJECTS.filter((project) => projectRecords(day, project.id).some(isDone)).length;
-}
-
-function formatMinutes(value) {
-  const minutes = Math.max(0, Math.round(Number(value) || 0));
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  if (!hours) return `${rest}分钟`;
-  return `${hours}小时${rest ? `${rest}分钟` : ""}`;
-}
-
-function transactionDone(transaction) {
-  return new Promise((resolve, reject) => {
-    transaction.oncomplete = resolve;
-    transaction.onerror = () => reject(transaction.error || new Error("本地数据库写入失败。"));
-    transaction.onabort = () => reject(transaction.error || new Error("本地数据库写入失败。"));
-  });
-}
-
-function openDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STATE_STORE)) db.createObjectStore(STATE_STORE);
-      if (!db.objectStoreNames.contains(MEDIA_STORE)) db.createObjectStore(MEDIA_STORE, { keyPath: "id" });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function readRecords() {
-  const transaction = database.transaction(STATE_STORE, "readonly");
-  const request = transaction.objectStore(STATE_STORE).get("records");
-  const value = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
-  await transactionDone(transaction);
-  return value;
-}
-
-async function saveRecords() {
-  if (fallbackToLocalStorage) return localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(data));
-  const transaction = database.transaction(STATE_STORE, "readwrite");
-  transaction.objectStore(STATE_STORE).put(data, "records");
-  await transactionDone(transaction);
-}
-
-async function saveImage(image) {
-  if (fallbackToLocalStorage) throw new Error("当前浏览器无法保存图片，请使用 Safari 的正常浏览模式后重试。");
-  const transaction = database.transaction(MEDIA_STORE, "readwrite");
-  transaction.objectStore(MEDIA_STORE).put(image);
-  await transactionDone(transaction);
-}
-
-async function getImage(id) {
-  if (fallbackToLocalStorage) return undefined;
-  const transaction = database.transaction(MEDIA_STORE, "readonly");
-  const request = transaction.objectStore(MEDIA_STORE).get(id);
-  const result = await new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
-  await transactionDone(transaction);
-  return result?.blob;
-}
-
-async function deleteImages(ids) {
-  if (fallbackToLocalStorage || !ids.length) return;
-  const transaction = database.transaction(MEDIA_STORE, "readwrite");
-  const store = transaction.objectStore(MEDIA_STORE);
-  ids.forEach((id) => store.delete(id));
-  await transactionDone(transaction);
-}
-
-async function initialiseStorage() {
-  try {
-    database = await openDatabase();
-    const saved = await readRecords();
-    if (saved) data = saved;
-    else {
-      data = readLegacyData();
-      await saveRecords();
-      localStorage.removeItem(LEGACY_STORAGE_KEY);
-    }
-  } catch (error) {
-    fallbackToLocalStorage = true;
-    data = readLegacyData();
-    console.warn("IndexedDB unavailable", error);
-  }
-}
-
-function streakDays(records, today = localDate()) {
-  let streak = 0;
-  const cursor = new Date(`${today}T12:00:00`);
-  while (dayHasRecords(records[localDate(cursor)])) {
-    streak += 1;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return streak;
-}
-
-function clearPreviewUrls(container) {
-  (container._previewUrls || []).forEach((url) => URL.revokeObjectURL(url));
-  container._previewUrls = [];
-}
-
-function newImageId() {
-  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function makeImage(file) {
-  return { id: newImageId(), name: file.name || "未命名图片", type: file.type, size: file.size, file };
-}
-
-function imageError(files, images) {
-  if (images.length + files.length > MAX_FILES) return `每条记录最多添加 ${MAX_FILES} 张图片。`;
-  for (const file of files) {
-    if (!file.type.startsWith("image/")) return `「${file.name}」不是图片，请从相册选择图片。`;
-    if (file.size > MAX_IMAGE_SIZE) return `图片「${file.name}」超过 10MB，请压缩后再上传。`;
-  }
-  const total = [...images, ...files].reduce((sum, item) => sum + (item.size || 0), 0);
-  return total > MAX_RECORD_MEDIA_SIZE ? "这一条记录的图片总大小不能超过 50MB。" : "";
-}
-
-async function ensureStorageSpace(files) {
-  if (!navigator.storage?.estimate || !files.length) return;
-  const { usage = 0, quota = 0 } = await navigator.storage.estimate();
-  const incoming = files.reduce((sum, file) => sum + file.size, 0);
-  if (quota && usage + incoming > quota * 0.9) throw new Error("手机本地存储空间不足，请删除一些旧图片后重试。");
-}
-
-function closeImageViewer() {
-  $("#media-viewer").hidden = true;
-  $("#media-viewer img").removeAttribute("src");
-  if (viewerUrl) URL.revokeObjectURL(viewerUrl);
-  viewerUrl = undefined;
-}
-
-function showImage(blob) {
-  closeImageViewer();
-  viewerUrl = URL.createObjectURL(blob);
-  $("#media-viewer img").src = viewerUrl;
-  $("#media-viewer").hidden = false;
-}
-
-async function renderImages(container, images, { editable = false, onRemove } = {}) {
-  clearPreviewUrls(container);
-  const renderId = Symbol("image-render");
-  container._imageRenderId = renderId;
-  container.replaceChildren();
-  for (const image of images || []) {
-    const blob = image.file || await getImage(image.id);
-    if (!blob || !blob.type.startsWith("image/") || !container.isConnected || container._imageRenderId !== renderId) continue;
-    const url = URL.createObjectURL(blob);
-    container._previewUrls.push(url);
-    const item = document.createElement("div");
-    const trigger = document.createElement("button");
-    const preview = document.createElement("img");
-    item.className = "media-item";
-    trigger.className = "image-trigger";
-    trigger.type = "button";
-    preview.src = url;
-    preview.alt = image.name || "打卡图片";
-    trigger.append(preview);
-    trigger.addEventListener("click", () => showImage(blob));
-    item.append(trigger);
-    if (editable) {
-      const remove = document.createElement("button");
-      remove.className = "media-remove";
-      remove.type = "button";
-      remove.setAttribute("aria-label", `移除 ${image.name}`);
-      remove.textContent = "×";
-      remove.addEventListener("click", () => onRemove(image.id));
-      item.append(remove);
-    }
-    container.append(item);
-  }
-}
-
-function showSuccess(project) {
-  $("#success-title").textContent = `${project.name} 打卡成功`;
-  $("#success-modal").hidden = false;
-}
-
-function closeSuccess() {
-  $("#success-modal").hidden = true;
-  closeCheckin();
-}
-
-function renderToday() {
-  const today = localDate();
-  const day = data[today] || {};
-  const completed = doneCount(day);
-  $("#today-label").textContent = displayDate(today);
-  $("#streak-count").textContent = streakDays(data, today);
-  $("#completion-copy").textContent = completed ? `今天已完成 ${completed} / ${PROJECTS.length} 项` : "今天还未开始";
-  const list = $("#project-list");
+const PROJECTS=[{id:"english",name:"学个英语",color:"var(--english-color)"},{id:"lacquer",name:"做个大漆",color:"var(--lacquer-color)"},{id:"dance",name:"杂七杂八",color:"var(--misc-color)"}];
+const ALLOWED_IMAGE_TYPES=new Set(["image/jpeg","image/png","image/webp","image/heic","image/heif","image/avif","image/gif"]);
+const UNSUPPORTED_IMAGE_MESSAGE="不支持这种图片格式，请使用 JPEG、PNG、WebP、HEIC、HEIF、AVIF 或 GIF。";
+const DB_NAME="daily-growth",DB_VERSION=3,STATE="state",MEDIA="media",LEGACY="daily-growth:v1",$=(s)=>document.querySelector(s),key=(uid)=>`account:${uid}:records`;
+let db,fallback=false,data={},user,sync,activeProject,attachments=[],viewerUrl,registerMode=false,pendingSignUp,filter={applied:false,year:"",month:"",date:"",start:"",end:""},filterMode="year";
+const uid=()=>crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`;
+const today=(d=new Date())=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+const active=(r)=>r?.sync_status!=="pending_delete"&&!r?.deleted_at;
+const records=(day,id,all=false)=>{const v=day?.[id],a=Array.isArray(v)?v:v?[v]:[];return all?a:a.filter(active)};
+const done=(r)=>!!(r&&(Number(r.minutes)>0||r.title||r.content||r.notes||r.note||r.media?.length));
+const has=(d)=>PROJECTS.some(p=>records(d,p.id).some(done));
+const mins=(v)=>{v=Math.max(0,Math.round(Number(v)||0));const h=Math.floor(v/60),m=v%60;return h?`${h}小时${m?`${m}分钟`:""}`:`${m}分钟`};
+const esc=(v)=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]);
+const dateText=(d)=>new Intl.DateTimeFormat("zh-CN",{year:"numeric",month:"long",day:"numeric",weekday:"short"}).format(new Date(`${d}T12:00:00`));
+const monthText=(d)=>new Intl.DateTimeFormat("zh-CN",{year:"numeric",month:"long"}).format(new Date(`${d}-01T12:00:00`));
+const complete=(tx)=>new Promise((ok,bad)=>{tx.oncomplete=ok;tx.onerror=()=>bad(tx.error);tx.onabort=()=>bad(tx.error)});
+function openDB(){return new Promise((ok,bad)=>{const r=indexedDB.open(DB_NAME,DB_VERSION);r.onupgradeneeded=()=>{const x=r.result;if(!x.objectStoreNames.contains(STATE))x.createObjectStore(STATE);if(!x.objectStoreNames.contains(MEDIA))x.createObjectStore(MEDIA,{keyPath:"id"})};r.onsuccess=()=>ok(r.result);r.onerror=()=>bad(r.error)})}
+async function stateGet(k){if(fallback)return JSON.parse(localStorage.getItem(`daily-growth:${k}`)||"null");const tx=db.transaction(STATE,"readonly"),r=tx.objectStore(STATE).get(k),v=await new Promise((ok,bad)=>{r.onsuccess=()=>ok(r.result);r.onerror=()=>bad(r.error)});await complete(tx);return v}
+async function statePut(k,v){if(fallback)return localStorage.setItem(`daily-growth:${k}`,JSON.stringify(v));const tx=db.transaction(STATE,"readwrite");tx.objectStore(STATE).put(v,k);await complete(tx)}
+async function stateKeys(){if(fallback)return Object.keys(localStorage).filter(k=>k.startsWith("daily-growth:account:")).map(k=>k.slice("daily-growth:".length));const tx=db.transaction(STATE,"readonly"),r=tx.objectStore(STATE).getAllKeys(),v=await new Promise((ok,bad)=>{r.onsuccess=()=>ok(r.result);r.onerror=()=>bad(r.error)});await complete(tx);return v}
+const recordFingerprints=(source)=>new Set(Object.entries(source||{}).flatMap(([date,day])=>Object.entries(day||{}).flatMap(([category,value])=>(Array.isArray(value)?value:value?[value]:[]).map(r=>JSON.stringify([date,category==="misc"?"dance":category,r?.title||"",Number(r?.minutes)||0,r?.content||"",r?.note??r?.notes??"",(r?.media||[]).map(x=>x.id).sort()])))));
+async function inferLegacyOwner(){if(await stateGet("legacyOwnerUid"))return;const legacy=await stateGet("records")||{},legacyRecords=recordFingerprints(legacy);if(!legacyRecords.size)return;const owners=[];for(const stateKey of await stateKeys()){if(!String(stateKey).startsWith("account:")||!String(stateKey).endsWith(":records"))continue;const account=await stateGet(stateKey)||{},accountRecords=recordFingerprints(account);if([...legacyRecords].some(item=>accountRecords.has(item)))owners.push(String(stateKey).slice(8,-8))}if(owners.length===1)await statePut("legacyOwnerUid",owners[0]);else if(owners.length>1)await statePut("legacyOwnerUid","legacy-owner-conflict")}
+const pendingCount=()=>Object.values(data).flatMap(day=>Object.values(day||{}).flatMap(v=>Array.isArray(v)?v:[v])).filter(r=>["pending","failed","pending_delete"].includes(r?.sync_status)).length;
+async function save(){if(user){await statePut(key(user.id),data);if(!navigator.onLine)syncStatus({state:"offline",count:pendingCount()})}}
+async function saveImage(x){if(fallback)throw Error("当前浏览器无法离线保存图片。");if(!user?.id)throw Error("未登录，无法保存图片缓存。");const tx=db.transaction(MEDIA,"readwrite");tx.objectStore(MEDIA).put({...x,owner_user_id:user.id});await complete(tx)}
+async function getImage(id){if(!user?.id)return;if(!fallback){const tx=db.transaction(MEDIA,"readonly"),r=tx.objectStore(MEDIA).get(id),v=await new Promise((ok,bad)=>{r.onsuccess=()=>ok(r.result);r.onerror=()=>bad(r.error)});await complete(tx);if(v?.owner_user_id===user.id&&v.blob)return v.blob}const image=Object.values(data).flatMap(day=>Object.values(day||{}).flatMap(v=>Array.isArray(v)?v:[v])).flatMap(r=>r?.media||[]).find(x=>x.id===id);if(!image?.path||!navigator.onLine)return;const blob=await downloadImage(image.path);await saveImage({...image,blob});return blob}
+async function deleteImages(ids){if(fallback||!user?.id||!ids.length)return;const tx=db.transaction(MEDIA,"readwrite"),s=tx.objectStore(MEDIA);[...new Set(ids)].forEach(id=>{const r=s.get(id);r.onsuccess=()=>{if(r.result?.owner_user_id===user.id)s.delete(id)}});await complete(tx)}
+async function claimImageCache(records,ownerId){if(fallback||!ownerId)return;const ids=[...new Set(Object.values(records).flatMap(day=>Object.values(day||{}).flatMap(v=>Array.isArray(v)?v:[v])).flatMap(r=>r?.media||[]).map(x=>x.id).filter(Boolean))];if(!ids.length)return;const tx=db.transaction(MEDIA,"readwrite"),s=tx.objectStore(MEDIA);ids.forEach(id=>{const r=s.get(id);r.onsuccess=()=>{if(r.result&&!r.result.owner_user_id)s.put({...r.result,owner_user_id:ownerId})}});await complete(tx)}
+async function storage(){try{db=await openDB();if(!await stateGet("records")){await statePut("records",JSON.parse(localStorage.getItem(LEGACY)||"{}"));localStorage.removeItem(LEGACY)}await inferLegacyOwner()}catch(e){fallback=true;console.warn(e)}}
+function streak(){let n=0,d=new Date(`${today()}T12:00:00`);while(has(data[today(d)])){n++;d.setDate(d.getDate()-1)}return n}
+function clearURLs(el){(el._urls||[]).forEach(URL.revokeObjectURL);el._urls=[]}
+async function images(el,list,{editable=false,onRemove}={}){clearURLs(el);const token=Symbol();el._token=token;el.replaceChildren();for(const image of list||[]){let blob=image.file;try{blob||=await getImage(image.id)}catch{}if(!blob?.type?.startsWith("image/")||el._token!==token)continue;const url=URL.createObjectURL(blob);el._urls.push(url);const item=document.createElement("div"),button=document.createElement("button"),img=document.createElement("img");item.className="media-item";button.className="image-trigger";button.type="button";img.src=url;img.alt=image.name||"打卡图片";button.append(img);button.onclick=()=>{viewerUrl=URL.createObjectURL(blob);$("#media-viewer img").src=viewerUrl;$("#media-viewer").hidden=false};item.append(button);if(editable){const remove=document.createElement("button");remove.className="media-remove";remove.textContent="×";remove.onclick=()=>onRemove(image.id);item.append(remove)}el.append(item)}}
+function closeViewer(){$("#media-viewer").hidden=true;$("#media-viewer img").removeAttribute("src");if(viewerUrl)URL.revokeObjectURL(viewerUrl);viewerUrl=null}
+function view(id){document.querySelectorAll(".view").forEach(x=>x.hidden=x.id!==id);document.querySelectorAll(".tab[data-view]").forEach(x=>x.classList.toggle("is-active",x.dataset.view===id))}
+function renderToday(){const d=data[today()]||{},count=PROJECTS.filter(p=>records(d,p.id).some(done)).length;$("#today-label").textContent=dateText(today());$("#streak-count").textContent=streak();$("#completion-copy").textContent=count?`今天已完成 ${count} / 3 项`:"今天还未开始";const list=$("#project-list");list.replaceChildren();PROJECTS.forEach(p=>{const checked=records(d,p.id).some(done),b=document.createElement("button");b.className="project-card";b.type="button";b.style.setProperty("--project",p.color);b.innerHTML=`<span><h3>${p.name}${checked?'<span class="done-check"> ✓</span>':""}</h3><p>${checked?"今天已打卡":"点击开始打卡"}</p></span><span class="arrow">›</span>`;b.onclick=()=>openCheckin(p);list.append(b)})}
+function openCheckin(p){activeProject=p;attachments=[];$("#checkin-heading").textContent=`${p.name}打卡页面`;$("#checkin-mark").style.background=p.color;$("#checkin-status").textContent=records(data[today()],p.id).length?"今天已有记录，可继续添加":"填写今天的打卡";$("#title-field").hidden=p.id!=="dance";["#checkin-title","#checkin-content","#checkin-minutes","#checkin-notes","#media-input"].forEach(s=>$(s).value="");$("#save-checkin").disabled=false;$("#save-checkin").textContent="保存记录";images($("#media-preview"),attachments,{editable:true,onRemove:removeImage});view("checkin-view");scrollTo(0,0)}
+function closeCheckin(){clearURLs($("#media-preview"));activeProject=null;attachments=[];view("today-view");renderToday()}
+function removeImage(id){attachments=attachments.filter(x=>x.id!==id);images($("#media-preview"),attachments,{editable:true,onRemove:removeImage})}
+function selectImages(e){const files=[...e.target.files];e.target.value="";if(attachments.length+files.length>5)return alert("每条记录最多添加 5 张图片。");for(const file of files){if(!ALLOWED_IMAGE_TYPES.has(file.type))return alert(UNSUPPORTED_IMAGE_MESSAGE);if(file.size>10*1024*1024)return alert("请选择单张不超过 10MB 的图片。")}attachments.push(...files.map(file=>({id:uid(),name:file.name,type:file.type,size:file.size,file})));images($("#media-preview"),attachments,{editable:true,onRemove:removeImage})}
+async function saveCheckin(){if(!activeProject||$("#save-checkin").disabled)return;const title=activeProject.id==="dance"?$("#checkin-title").value.trim():"",content=$("#checkin-content").value.trim(),minutes=Math.max(0,Number($("#checkin-minutes").value)||0),notes=$("#checkin-notes").value.trim();if(!(title||content||minutes||notes||attachments.length))return alert("请至少填写打卡内容、时间、备注或添加一张图片。");const b=$("#save-checkin");b.disabled=true;b.textContent="保存中…";try{if(attachments.length&&navigator.storage?.estimate){const q=await navigator.storage.estimate();if(q.quota&&q.usage+attachments.reduce((n,x)=>n+x.file.size,0)>q.quota*.9)throw Error("手机本地存储空间不足，请删除一些旧图片后重试。")}for(const x of attachments){const {file,...meta}=x;await saveImage({...meta,blob:file})}const d=today(),r={id:uid(),remote_id:null,owner_user_id:user.id,sync_status:"pending",sync_error:"",updated_at:new Date().toISOString(),record_date:d,category:activeProject.id,title,content,minutes,notes,note:notes,media:attachments.map(({file,...x})=>x)};data[d]||={};data[d][activeProject.id]=[...records(data[d],activeProject.id,true),r];await save();renderAll();$("#success-title").textContent=`${activeProject.name} 打卡成功`;$("#success-modal").hidden=false;if(navigator.onLine)sync?.syncAll()}catch(e){alert(e.message||"保存失败，请稍后重试。");b.disabled=false;b.textContent="保存记录"}}
+function summary(day){const a=[];PROJECTS.slice(0,2).forEach(p=>{const r=records(day,p.id).filter(done);if(r.length)a.push({name:p.name,minutes:r.reduce((n,x)=>n+(+x.minutes||0),0),color:p.color})});const m=new Map();records(day,"dance").filter(done).forEach(r=>m.set(r.title||"杂七杂八",(m.get(r.title||"杂七杂八")||0)+(+r.minutes||0)));m.forEach((minutes,name)=>a.push({name,minutes,color:PROJECTS[2].color,misc:true}));return a}
+function dates(){let a=Object.keys(data).filter(d=>has(data[d]));if(filter.applied){if(filter.date)a=a.filter(d=>d===filter.date);else if(filter.start||filter.end)a=a.filter(d=>(!filter.start||d>=filter.start)&&(!filter.end||d<=filter.end));else a=a.filter(d=>(!filter.year||d.slice(0,4)===filter.year)&&(!filter.month||+d.slice(5,7)===+filter.month))}return a.sort((a,b)=>filter.applied?a.localeCompare(b):b.localeCompare(a))}
+function years(){const s=$("#filter-year"),v=s.value,a=[...new Set(Object.keys(data).filter(d=>has(data[d])).map(d=>d.slice(0,4)))].sort();s.replaceChildren(new Option("选择年份",""));a.forEach(y=>s.append(new Option(`${y}年`,y)));s.value=a.includes(v)?v:""}
+function card(d){const b=document.createElement("button");b.className="history-row";b.type="button";const items=summary(data[d]),normal=items.filter(x=>!x.misc),misc=items.filter(x=>x.misc);b.innerHTML=`<header><time>${dateText(d)}</time><span class="history-chevron">›</span></header><div class="day-summary">${normal.map(x=>`<section class="day-project" style="--project:${x.color}"><strong>${esc(x.name)}</strong><span>${mins(x.minutes)}</span></section>`).join("")}${misc.length?`<section class="day-project day-project-misc" style="--project:${PROJECTS[2].color}"><strong>杂七杂八</strong><div class="misc-summary-list">${misc.map(x=>`<div><span>${esc(x.name)}</span><span>${mins(x.minutes)}</span></div>`).join("")}</div></section>`:""}</div>`;b.onclick=()=>detail(d);return b}
+function detail(d){const out=$("#history-detail");out.querySelectorAll(".media-preview").forEach(clearURLs);out.replaceChildren();$("#history-day-heading").textContent=dateText(d);PROJECTS.forEach(p=>records(data[d],p.id).forEach(r=>{const a=document.createElement("article"),label=p.id==="dance"&&r.title?r.title:p.name;a.className="record-line";a.style.setProperty("--project",p.color);a.innerHTML=`<span class="project-tag${p.id==="dance"?" is-yellow":""}">${esc(label)}</span><strong>${esc(p.name)}${p.id==="dance"&&r.title?` · ${esc(r.title)}`:""} · ${mins(r.minutes)}</strong><span>${esc([r.content,r.notes??r.note].filter(Boolean).join("\n")||"未填写内容和备注")}</span>`;const del=document.createElement("button");del.className="record-delete";del.type="button";del.textContent="删除记录";del.onclick=async()=>{if(!confirm("确定删除这条记录吗？"))return;r.sync_status="pending_delete";r.deleted_at=new Date().toISOString();r.updated_at=r.deleted_at;await save();detail(d);renderAll();if(navigator.onLine)sync?.syncAll()};a.append(del);if(r.media?.length){const g=document.createElement("div");g.className="media-preview record-media";a.append(g);images(g,r.media)}out.append(a)}));view("history-day-view");scrollTo(0,0)}
+function renderStats(){const list=$("#stats-list");list.replaceChildren();PROJECTS.forEach(p=>{const r=Object.keys(data).flatMap(d=>records(data[d],p.id)),m=r.reduce((n,x)=>n+(+x.minutes||0),0),days=Object.keys(data).filter(d=>records(data[d],p.id).some(done)).length,a=document.createElement("article");a.className="stat-card";a.style.setProperty("--project",p.color);a.innerHTML=`<header><h3>${p.name}</h3><strong>${mins(m)}</strong></header><p>累计练习 ${days} 天 · ${r.length} 条记录</p>`;list.append(a)})}
+function renderHistory(){
+  years();
+  const status=$("#filter-status");
+  status.hidden=!filter.applied;
+  if(filter.applied)$("#filter-summary").textContent=filter.date?`筛选：${filter.date.replaceAll("-","/")}`:filter.start||filter.end?`筛选：${filter.start.replaceAll("-","/")||"最早"} - ${filter.end.replaceAll("-","/")||"今天"}`:filter.month?`筛选：${filter.year}年${filter.month}月`:`筛选：${filter.year}年`;
+  const list=$("#history-list"),items=dates(),months=[...new Set(items.map(date=>date.slice(0,7)))];
   list.replaceChildren();
-  PROJECTS.forEach((project) => {
-    const checkedIn = projectRecords(day, project.id).some(isDone);
-    const card = document.createElement("button");
-    const copy = document.createElement("span");
-    const heading = document.createElement("h3");
-    const note = document.createElement("p");
-    card.className = "project-card";
-    card.type = "button";
-    card.style.setProperty("--project", project.color);
-    heading.textContent = project.name;
-    if (checkedIn) {
-      const check = document.createElement("span");
-      check.className = "done-check";
-      check.setAttribute("aria-label", "今天已打卡");
-      check.textContent = " ✓";
-      heading.append(check);
-    }
-    note.textContent = checkedIn ? "今天已打卡" : "点击开始打卡";
-    copy.append(heading, note);
-    card.append(copy);
-    const arrow = document.createElement("span");
-    arrow.className = "arrow";
-    arrow.textContent = "›";
-    card.append(arrow);
-    card.addEventListener("click", () => openCheckin(project));
-    list.append(card);
-  });
-}
-
-function openCheckin(project) {
-  activeProject = project;
-  activeAttachments = [];
-  const count = projectRecords(data[localDate()], project.id).length;
-  $("#checkin-heading").textContent = `${project.name}打卡页面`;
-  $("#checkin-mark").style.background = project.color;
-  $("#checkin-status").textContent = count ? `今天已有 ${count} 条记录，可继续添加` : "填写今天的打卡";
-  $("#title-field").hidden = project.id !== "dance";
-  $("#checkin-title").value = "";
-  $("#checkin-content").value = "";
-  $("#checkin-minutes").value = "";
-  $("#checkin-notes").value = "";
-  $("#media-input").value = "";
-  $("#save-checkin").disabled = false;
-  $("#save-checkin").textContent = "保存记录";
-  renderImages($("#media-preview"), activeAttachments, { editable: true, onRemove: removeActiveImage });
-  showView("checkin-view");
-  window.scrollTo(0, 0);
-}
-
-function closeCheckin() {
-  clearPreviewUrls($("#media-preview"));
-  activeProject = undefined;
-  activeAttachments = [];
-  showView("today-view");
-  renderToday();
-}
-
-function removeActiveImage(id) {
-  activeAttachments = activeAttachments.filter((image) => image.id !== id);
-  renderImages($("#media-preview"), activeAttachments, { editable: true, onRemove: removeActiveImage });
-}
-
-async function saveCheckin() {
-  if (!activeProject) return;
-  const saveButton = $("#save-checkin");
-  if (saveButton.disabled) return;
-  const title = activeProject.id === "dance" ? $("#checkin-title").value.trim() : "";
-  const content = $("#checkin-content").value.trim();
-  const minutes = Math.max(0, Number($("#checkin-minutes").value) || 0);
-  const notes = $("#checkin-notes").value.trim();
-  if (!(title || content || minutes || notes || activeAttachments.length)) return alert("请至少填写打卡内容、时间、备注或添加一张图片。");
-  const today = localDate();
-  const previousDay = data[today] && { ...data[today] };
-  const savedImageIds = [];
-  saveButton.disabled = true;
-  saveButton.textContent = "保存中…";
-  try {
-    await ensureStorageSpace(activeAttachments.map((image) => image.file));
-    for (const image of activeAttachments) {
-      const { file, ...metadata } = image;
-      await saveImage({ ...metadata, blob: file });
-      savedImageIds.push(image.id);
-    }
-    data[today] ||= {};
-    const existing = projectRecords(data[today], activeProject.id);
-    data[today][activeProject.id] = [...existing, { title, content, minutes, notes, media: activeAttachments.map(({ file, ...image }) => image) }];
-    await saveRecords();
-    renderToday(); renderHistory(); renderStats();
-    showSuccess(activeProject);
-  } catch (error) {
-    try { await deleteImages(savedImageIds); } catch (cleanupError) { console.warn("未能清理未保存的图片", cleanupError); }
-    if (previousDay) data[today] = previousDay;
-    else delete data[today];
-    console.error(error);
-    alert(error.message || "保存失败，请检查手机存储空间后重试。");
-    saveButton.disabled = false;
-    saveButton.textContent = "保存记录";
-  }
-}
-
-function daySummary(day) {
-  const result = [];
-  PROJECTS.slice(0, 2).forEach((project) => {
-    const records = projectRecords(day, project.id).filter(isDone);
-    if (!records.length) return;
-    result.push({ label: project.name, minutes: records.reduce((sum, record) => sum + (Number(record.minutes) || 0), 0), color: project.color, yellow: false });
-  });
-  const titles = new Map();
-  projectRecords(day, "dance").filter(isDone).forEach((record) => {
-    const title = record.title || "杂七杂八";
-    titles.set(title, (titles.get(title) || 0) + (Number(record.minutes) || 0));
-  });
-  titles.forEach((minutes, label) => result.push({ label, minutes, color: PROJECTS[2].color, yellow: true }));
-  return result;
-}
-
-function populateYearOptions() {
-  const select = $("#filter-year");
-  const current = select.value;
-  const years = [...new Set(Object.keys(data).filter((date) => dayHasRecords(data[date])).map((date) => date.slice(0, 4)))].sort();
-  select.replaceChildren(new Option("选择年份", ""));
-  years.forEach((year) => select.append(new Option(`${year}年`, year)));
-  select.value = years.includes(current) ? current : "";
-}
-
-function historyDates() {
-  let dates = Object.keys(data).filter((date) => dayHasRecords(data[date]));
-  const { applied, year, month, date, start, end } = historyFilter;
-  if (applied) {
-    if (date) dates = dates.filter((key) => key === date);
-    else if (start || end) dates = dates.filter((key) => (!start || key >= start) && (!end || key <= end));
-    else dates = dates.filter((key) => (!year || key.slice(0, 4) === year) && (!month || Number(key.slice(5, 7)) === Number(month)));
-  }
-  return dates.sort((a, b) => applied ? a.localeCompare(b) : b.localeCompare(a));
-}
-
-function groupedHistoryDates(dates) {
-  const keys = new Set(dates.map((date) => date.slice(0, 7)));
-  const groupForYear = historyFilter.applied && historyFilter.year && !historyFilter.month && !historyFilter.date && !historyFilter.start && !historyFilter.end;
-  const groupForRange = historyFilter.applied && (historyFilter.start || historyFilter.end) && keys.size > 1;
-  if (!groupForYear && !groupForRange) return [];
-  const groups = new Map();
-  dates.forEach((date) => {
-    const key = date.slice(0, 7);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(date);
-  });
-  return [...groups.entries()];
-}
-
-function makeHistoryCard(date) {
-  const card = document.createElement("button");
-  const header = document.createElement("header");
-  const time = document.createElement("time");
-  const chevron = document.createElement("span");
-  const summaries = document.createElement("div");
-  card.className = "history-row";
-  card.type = "button";
-  time.textContent = displayDate(date);
-  chevron.className = "history-chevron";
-  chevron.textContent = "›";
-  header.append(time, chevron);
-  summaries.className = "day-summary";
-  const overview = daySummary(data[date]);
-  overview.filter((summary) => !summary.yellow).forEach((summary) => {
-    const group = document.createElement("section");
-    const name = document.createElement("strong");
-    const duration = document.createElement("span");
-    group.className = "day-project";
-    group.style.setProperty("--project", summary.color);
-    name.textContent = summary.label;
-    duration.textContent = formatMinutes(summary.minutes);
-    group.append(name, duration);
-    summaries.append(group);
-  });
-  const misc = overview.filter((summary) => summary.yellow);
-  if (misc.length) {
-    const group = document.createElement("section");
-    const name = document.createElement("strong");
-    const items = document.createElement("div");
-    group.className = "day-project day-project-misc";
-    group.style.setProperty("--project", PROJECTS[2].color);
-    name.textContent = PROJECTS[2].name;
-    items.className = "misc-summary-list";
-    misc.forEach((summary) => {
-      const item = document.createElement("div");
-      const title = document.createElement("span");
-      const duration = document.createElement("span");
-      title.textContent = summary.label;
-      duration.textContent = formatMinutes(summary.minutes);
-      item.append(title, duration);
-      items.append(item);
-    });
-    group.append(name, items);
-    summaries.append(group);
-  }
-  card.append(header, summaries);
-  card.addEventListener("click", () => openHistoryDay(date));
-  return card;
-}
-
-function renderMonthJump(groups) {
-  const jump = $("#month-jump");
+  $("#month-jump").hidden=true;
+  if(!items.length){list.innerHTML='<p class="empty">没有符合条件的打卡记录。</p>';return}
+  const yearOnly=filter.applied&&filter.year&&!filter.month&&!filter.date&&!filter.start&&!filter.end;
+  const rangeAcrossMonths=filter.applied&&(filter.start||filter.end)&&months.length>1;
+  if(!yearOnly&&!rangeAcrossMonths){items.forEach(date=>list.append(card(date)));return}
+  const groups=new Map(),crossYear=new Set(items.map(date=>date.slice(0,4))).size>1,jump=$("#month-jump");
+  items.forEach(date=>{const month=date.slice(0,7);groups.set(month,[...(groups.get(month)||[]),date])});
   jump.replaceChildren();
-  if (!groups.length) { jump.hidden = true; return; }
-  groups.forEach(([month]) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = displayMonth(month);
-    button.addEventListener("click", () => {
-      document.getElementById(`month-${month}`).scrollIntoView({ behavior: "smooth", block: "start" });
-      jump.querySelectorAll("button").forEach((item) => item.classList.toggle("is-active", item === button));
-    });
-    jump.append(button);
-  });
-  jump.hidden = false;
+  groups.forEach((monthDates,month)=>{const section=document.createElement("section");section.className="month-group";section.id=`month-${month}`;section.innerHTML=`<h3 class="month-heading">${monthText(month)}</h3>`;monthDates.forEach(date=>section.append(card(date)));list.append(section);const button=document.createElement("button");button.textContent=crossYear?monthText(month):`${Number(month.slice(5))}月`;button.onclick=()=>section.scrollIntoView({behavior:"smooth"});jump.append(button)});
+  jump.hidden=false;
 }
+function renderAll(){renderToday();renderHistory();renderStats()}
+function mode(m){filterMode=m;document.querySelectorAll("[data-filter-mode]").forEach(b=>b.classList.toggle("is-active",b.dataset.filterMode===m));$("#filter-year-field").hidden=!['year','month'].includes(m);$("#filter-month-field").hidden=m!=="month";$("#filter-date-field").hidden=m!=="date";$("#filter-start-field").hidden=m!=="range";$("#filter-end-field").hidden=m!=="range"}
+function clearFilter(){["#filter-year","#filter-month","#filter-date","#filter-start","#filter-end"].forEach(s=>$(s).value="");filter={applied:false,year:"",month:"",date:"",start:"",end:""};renderHistory();$("#filter-sheet").hidden=true}
+function applyFilter(){const v={year:$("#filter-year").value,month:$("#filter-month").value,date:$("#filter-date").value,start:$("#filter-start").value,end:$("#filter-end").value};if(filterMode==="year"&&!v.year)return alert("请选择年份。");if(filterMode==="month"&&(!v.year||!v.month))return alert("请选择年份和月份。");if(filterMode==="date"&&!v.date)return alert("请选择日期。");if(filterMode==="range"&&(!v.start&&!v.end||v.start&&v.end&&v.start>v.end))return alert("请填写有效的时间段。");filter={applied:true,...v};if(filterMode==="year")Object.assign(filter,{month:"",date:"",start:"",end:""});if(filterMode==="month")Object.assign(filter,{date:"",start:"",end:""});if(filterMode==="date")Object.assign(filter,{year:"",month:"",start:"",end:""});if(filterMode==="range")Object.assign(filter,{year:"",month:"",date:""});renderHistory();$("#filter-sheet").hidden=true}
+function syncStatus(s){const b=$("#sync-status");if(!user){b.hidden=true;return}b.hidden=false;b.textContent=s.state==="offline"?`离线模式${s.count?` · ${s.count} 条待同步`:""}`:s.state==="expired"?"登录已过期":s.state==="syncing"?"正在同步…":s.state==="pending"?`${s.count} 条等待同步`:s.state==="failed"?"同步失败":"已同步"}
+async function loadAccount(u,offline=false){user=u;data=await stateGet(key(u.id))||{};let changed=normaliseAccountRecords(data,u.id);await claimImageCache(data,u.id);if(!Object.keys(data).length){const legacy=await stateGet("records")||{},legacyOwner=await stateGet("legacyOwnerUid");if(Object.keys(legacy).length&&(!legacyOwner||legacyOwner===u.id)&&confirm("发现本机已有历史记录，是否同步到云端？")){if(!legacyOwner)await statePut("legacyOwnerUid",u.id);data=JSON.parse(JSON.stringify(legacy));normaliseAccountRecords(data,u.id);await claimImageCache(data,u.id);changed=true}}if(changed)await save();sync=offline?null:createSyncService({getRecords:()=>data,saveRecords:save,getImage,saveImage,deleteImages,ownerId:u.id,onStatus:syncStatus,onChanged:renderAll});$("#account-email").textContent=u.email||u.id;$("#auth-gate").hidden=true;renderAll();if(offline)syncStatus({state:"offline",count:pendingCount()});else{syncStatus({state:"syncing"});sync.syncAll()}}
+async function rememberAndLoad(u){await statePut("lastAuthenticatedUser",{id:u.id,email:u.email||""});await loadAccount(u)}
+async function resumeOnline(){if(!user)return;try{const cloudUser=await getCurrentUser();if(!cloudUser||cloudUser.id!==user.id){await statePut("lastAuthenticatedUser",null);syncStatus({state:"expired"});alert("登录已过期，请重新登录后同步。");authScreen("登录已过期，请重新登录后同步。");return}await rememberAndLoad(cloudUser)}catch(error){syncStatus({state:"offline",count:pendingCount()});console.warn("暂时无法验证云端登录状态",error)}}
+async function logout(){if(!user)return;if(!navigator.onLine){if(!confirm("当前处于离线状态。仅退出本机登录吗？未同步的数据会继续保存在本机。"))return;await statePut("lastAuthenticatedUser",null);authScreen("已退出本机账号。未同步数据仍保存在本机。");return}try{await signOut();await statePut("lastAuthenticatedUser",null);authScreen("已退出登录。")}catch(error){console.warn("云端退出失败",error);alert("退出登录失败，请检查网络后重试。")} }
+function authScreen(msg=""){user=null;data={};sync=null;pendingSignUp=null;registerMode=false;$("#account-sheet").hidden=true;$("#auth-gate").hidden=false;$("#auth-message").textContent=msg;authMode();syncStatus({})}
+function authMode(){const verifying=!!pendingSignUp;$("#auth-email-field").hidden=verifying;$("#auth-password-field").hidden=verifying;$("#auth-otp-field").hidden=!verifying;$("#auth-submit").textContent=verifying?"验证并完成注册":registerMode?"注册并发送验证码":"登录";$("#auth-switch").textContent=verifying||registerMode?"返回登录":"注册新账号";$("#auth-copy").textContent=verifying?`验证码已发送至 ${pendingSignUp.email}`:registerMode?"输入邮箱和密码后，我们会发送注册验证码。":"登录后安全同步你的成长记录。";$("#auth-password").autocomplete=registerMode?"new-password":"current-password"}
+async function submit(){const b=$("#auth-submit");b.disabled=true;try{if(pendingSignUp){const token=$("#auth-otp").value.trim();if(!token)throw Error("请输入邮箱收到的验证码。");const verified=await verifySignUpOtp(pendingSignUp.result,token);const u=verified?.user||verified?.session?.user||await getCurrentUser();if(!u)throw Error("验证码已通过，但未取得用户信息，请重试。");pendingSignUp=null;registerMode=false;await rememberAndLoad(u);return}const email=$("#auth-email").value.trim(),password=$("#auth-password").value;if(!email||!password)throw Error("请输入邮箱和密码。");if(registerMode){const result=await signUpWithEmail(email,password);if(typeof result?.verifyOtp!=="function")throw Error("CloudBase 未返回验证码验证流程，请检查邮箱注册配置。");pendingSignUp={email,result};$("#auth-otp").value="";$("#auth-message").textContent="请输入邮箱收到的验证码。";authMode();$("#auth-otp").focus()}else{await signInWithEmail(email,password);const u=await getCurrentUser();if(!u)throw Error("未取得用户信息，请重试。");await rememberAndLoad(u)}}catch(e){$("#auth-message").textContent=e.message||"认证失败，请重试。"}finally{b.disabled=false}}
 
-function filterDescription() {
-  if (!historyFilter.applied) return "";
-  if (historyFilter.date) return `筛选：${historyFilter.date.replaceAll("-", "/")}`;
-  if (historyFilter.start || historyFilter.end) return `筛选：${historyFilter.start.replaceAll("-", "/") || "最早"} - ${historyFilter.end.replaceAll("-", "/") || "今天"}`;
-  if (historyFilter.month) return `筛选：${historyFilter.year}年${historyFilter.month}月`;
-  return `筛选：${historyFilter.year}年`;
-}
-
-function renderFilterStatus() {
-  const status = $("#filter-status");
-  status.hidden = !historyFilter.applied;
-  $("#filter-summary").textContent = filterDescription();
-}
-
-function renderHistory() {
-  populateYearOptions();
-  renderFilterStatus();
-  const dates = historyDates();
-  const groups = groupedHistoryDates(dates);
-  const list = $("#history-list");
-  list.replaceChildren();
-  renderMonthJump(groups);
-  if (!dates.length) {
-    list.innerHTML = '<p class="empty">没有符合条件的打卡记录。</p>';
-    return;
-  }
-  if (!groups.length) dates.forEach((date) => list.append(makeHistoryCard(date)));
-  else groups.forEach(([month, monthDates]) => {
-    const section = document.createElement("section");
-    const heading = document.createElement("h3");
-    section.className = "month-group";
-    section.id = `month-${month}`;
-    heading.className = "month-heading";
-    heading.textContent = displayMonth(month);
-    section.append(heading);
-    monthDates.forEach((date) => section.append(makeHistoryCard(date)));
-    list.append(section);
-  });
-}
-
-function openHistoryDay(date) {
-  selectedHistoryDate = date;
-  const day = data[date] || {};
-  const detail = $("#history-detail");
-  detail.querySelectorAll(".media-preview").forEach(clearPreviewUrls);
-  detail.replaceChildren();
-  $("#history-day-heading").textContent = displayDate(date);
-  PROJECTS.forEach((project) => projectRecords(day, project.id).forEach((record) => {
-    const row = document.createElement("article");
-    const tag = document.createElement("span");
-    const title = document.createElement("strong");
-    const copy = document.createElement("span");
-    row.className = "record-line";
-    row.style.setProperty("--project", project.color);
-    tag.className = `project-tag${project.id === "dance" ? " is-yellow" : ""}`;
-    tag.textContent = project.id === "dance" && record.title ? record.title : project.name;
-    title.textContent = `${project.name}${project.id === "dance" && record.title ? ` · ${record.title}` : ""} · ${formatMinutes(record.minutes)}`;
-    copy.textContent = [record.content, record.notes].filter(Boolean).join("\n") || "未填写内容和备注";
-    row.append(tag, title, copy);
-    const images = (record.media || []).filter((image) => image.type?.startsWith("image/"));
-    if (images.length) {
-      const gallery = document.createElement("div");
-      gallery.className = "media-preview record-media";
-      row.append(gallery);
-      renderImages(gallery, images);
-    }
-    detail.append(row);
-  }));
-  showView("history-day-view");
-  window.scrollTo(0, 0);
-}
-
-function renderStats() {
-  const dates = Object.keys(data);
-  const list = $("#stats-list");
-  list.replaceChildren();
-  PROJECTS.forEach((project) => {
-    const records = dates.flatMap((date) => projectRecords(data[date], project.id));
-    const minutes = records.reduce((total, record) => total + (Number(record.minutes) || 0), 0);
-    const activeDays = dates.filter((date) => projectRecords(data[date], project.id).some(isDone)).length;
-    const card = document.createElement("article");
-    card.className = "stat-card";
-    card.style.setProperty("--project", project.color);
-    card.innerHTML = `<header><h3>${project.name}</h3><strong>${formatMinutes(minutes)}</strong></header><p>累计练习 ${activeDays} 天 · ${records.length} 条记录</p>`;
-    list.append(card);
-  });
-}
-
-function showView(id) {
-  document.querySelectorAll(".view").forEach((view) => { view.hidden = view.id !== id; });
-  document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("is-active", tab.dataset.view === id));
-}
-
-function applyHistoryFilter() {
-  const values = {
-    year: $("#filter-year").value,
-    month: $("#filter-month").value,
-    date: $("#filter-date").value,
-    start: $("#filter-start").value,
-    end: $("#filter-end").value
-  };
-  if (filterMode === "year") {
-    if (!values.year) return alert("请选择年份。");
-    historyFilter = { applied: true, ...values, month: "", date: "", start: "", end: "" };
-  } else if (filterMode === "month") {
-    if (!values.year || !values.month) return alert("请选择年份和月份。");
-    historyFilter = { applied: true, ...values, date: "", start: "", end: "" };
-  } else if (filterMode === "date") {
-    if (!values.date) return alert("请选择日期。");
-    historyFilter = { applied: true, ...values, year: "", month: "", start: "", end: "" };
-  } else {
-    if (!values.start && !values.end) return alert("请选择开始日期或结束日期。");
-    if (values.start && values.end && values.start > values.end) return alert("开始日期不能晚于结束日期。");
-    historyFilter = { applied: true, ...values, year: "", month: "", date: "" };
-  }
-  renderHistory();
-  closeFilterSheet();
-}
-
-function clearHistoryFilter() {
-  ["#filter-year", "#filter-month", "#filter-date", "#filter-start", "#filter-end"].forEach((selector) => { $(selector).value = ""; });
-  historyFilter = { applied: false, year: "", month: "", date: "", start: "", end: "" };
-  renderHistory();
-  closeFilterSheet();
-}
-
-function setFilterMode(mode) {
-  filterMode = mode;
-  document.querySelectorAll("[data-filter-mode]").forEach((button) => button.classList.toggle("is-active", button.dataset.filterMode === mode));
-  $("#filter-year-field").hidden = !["year", "month"].includes(mode);
-  $("#filter-month-field").hidden = mode !== "month";
-  $("#filter-date-field").hidden = mode !== "date";
-  $("#filter-start-field").hidden = mode !== "range";
-  $("#filter-end-field").hidden = mode !== "range";
-}
-
-function openFilterSheet() {
-  populateYearOptions();
-  const mode = historyFilter.date ? "date" : historyFilter.start || historyFilter.end ? "range" : historyFilter.month ? "month" : "year";
-  setFilterMode(mode);
-  $("#filter-sheet").hidden = false;
-}
-
-function closeFilterSheet() {
-  $("#filter-sheet").hidden = true;
-}
-
-document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
-  if (activeProject) { clearPreviewUrls($("#media-preview")); activeProject = undefined; activeAttachments = []; }
-  showView(tab.dataset.view);
-}));
-$("#back-home").addEventListener("click", closeCheckin);
-$("#back-history").addEventListener("click", () => showView("history-view"));
-$("#open-filter").addEventListener("click", openFilterSheet);
-$("#close-filter").addEventListener("click", closeFilterSheet);
-$("#filter-sheet").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeFilterSheet(); });
-document.querySelectorAll("[data-filter-mode]").forEach((button) => button.addEventListener("click", () => setFilterMode(button.dataset.filterMode)));
-$("#apply-filter").addEventListener("click", applyHistoryFilter);
-$("#clear-filter").addEventListener("click", clearHistoryFilter);
-$("#quick-clear-filter").addEventListener("click", clearHistoryFilter);
-$("#media-input").addEventListener("change", (event) => {
-  const files = [...event.target.files];
-  const error = imageError(files, activeAttachments);
-  event.target.value = "";
-  if (error) return alert(error);
-  activeAttachments.push(...files.map(makeImage));
-  renderImages($("#media-preview"), activeAttachments, { editable: true, onRemove: removeActiveImage });
-});
-$("#save-checkin").addEventListener("click", saveCheckin);
-$("#success-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeSuccess(); });
-$("#success-modal .modal-close").addEventListener("click", closeSuccess);
-$("#media-viewer").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeImageViewer(); });
-$("#media-viewer .viewer-close").addEventListener("click", closeImageViewer);
-if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js", { scope: "./" }));
-initialiseStorage().then(() => { renderToday(); renderHistory(); renderStats(); });
-console.assert(formatMinutes(80) === "1小时20分钟", "duration formatting failed");
-console.assert(streakDays({ "2026-08-26": { english: { minutes: 20 } }, "2026-08-25": { dance: { minutes: 10 } } }, "2026-08-26") === 2, "streak calculation failed");
+document.querySelectorAll(".tab[data-view]").forEach(b=>b.onclick=()=>{if(activeProject)closeCheckin();view(b.dataset.view)});$("#back-home").onclick=closeCheckin;$("#back-history").onclick=()=>view("history-view");$("#open-filter").onclick=()=>{years();mode(filter.date?"date":filter.start||filter.end?"range":filter.month?"month":"year");$("#filter-sheet").hidden=false};$("#close-filter").onclick=()=>$("#filter-sheet").hidden=true;$("#filter-sheet").onclick=e=>{if(e.target===e.currentTarget)e.currentTarget.hidden=true};document.querySelectorAll("[data-filter-mode]").forEach(b=>b.onclick=()=>mode(b.dataset.filterMode));$("#apply-filter").onclick=applyFilter;$("#clear-filter").onclick=clearFilter;$("#quick-clear-filter").onclick=clearFilter;$("#media-input").onchange=selectImages;$("#save-checkin").onclick=saveCheckin;$("#success-modal").onclick=e=>{if(e.target===e.currentTarget){$("#success-modal").hidden=true;closeCheckin()}};$("#success-modal .modal-close").onclick=()=>{$("#success-modal").hidden=true;closeCheckin()};$("#media-viewer").onclick=e=>{if(e.target===e.currentTarget)closeViewer()};$("#media-viewer .viewer-close").onclick=closeViewer;$("#auth-switch").onclick=()=>{registerMode=!registerMode;authMode()};$("#auth-submit").onclick=submit;$("#account-button").onclick=()=>$("#account-sheet").hidden=false;$("#close-account").onclick=()=>$("#account-sheet").hidden=true;$("#account-sheet").onclick=e=>{if(e.target===e.currentTarget)e.currentTarget.hidden=true};$("#sync-status").onclick=()=>sync?sync.syncAll():navigator.onLine&&resumeOnline();$("#account-sync").onclick=()=>navigator.onLine?resumeOnline():syncStatus({state:"offline",count:pendingCount()});$("#logout").onclick=logout;addEventListener("offline",()=>{sync=null;syncStatus({state:"offline",count:pendingCount()})});addEventListener("online",resumeOnline);if("serviceWorker"in navigator)addEventListener("load",()=>navigator.serviceWorker.register("./sw.js",{scope:"./"}));
+$("#auth-switch").onclick=()=>{if(pendingSignUp){pendingSignUp=null;registerMode=false;$("#auth-otp").value=""}else registerMode=!registerMode;$("#auth-message").textContent="";authMode()};
+(async()=>{await storage();authMode();if(!isCloudbaseConfigured())return authScreen(cloudbaseConfigurationMessage());try{initialiseCloudbase()}catch(error){authScreen(error.message||"CloudBase 初始化失败。");return}const lastUser=await stateGet("lastAuthenticatedUser");if(!navigator.onLine){lastUser?await loadAccount(lastUser,true):authScreen("当前离线，请先联网登录一次。");return}try{const cloudUser=await getCurrentUser();if(cloudUser)await rememberAndLoad(cloudUser);else{await statePut("lastAuthenticatedUser",null);authScreen()}}catch(error){if(lastUser)await loadAccount(lastUser,true);else authScreen("暂时无法验证登录状态，请检查网络后重试。")}})();
